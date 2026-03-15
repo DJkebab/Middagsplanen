@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
+import { database } from "./firebaseConfig";
+import { ref, set, get, onValue, update } from "firebase/database";
 
 const RESTAURANTS = [
   {
@@ -284,31 +286,45 @@ export default function App() {
   const [newSuggestion, setNewSuggestion] = useState("");
   const [showRemoved, setShowRemoved] = useState(false);
 
-  const loadData = useCallback(async () => {
-    try {
-      const votesData = localStorage.getItem(STORE_VOTES);
-      if (votesData) {
-        const data = JSON.parse(votesData);
-        setVotes(data.votes || {});
-        setVoterNames(data.names || {});
-      }
-    } catch (e) { /* empty */ }
-    try {
-      const suggestionsData = localStorage.getItem(STORE_SUGGEST);
-      if (suggestionsData) {
-        setSuggestions(JSON.parse(suggestionsData));
-      }
-    } catch (e) { /* empty */ }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { loadData(); }, [loadData]);
   useEffect(() => {
-    if (!loading) {
-      const interval = setInterval(loadData, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [loading, loadData]);
+    // Listen for votes in real-time
+    const votesRef = ref(database, "votes");
+    const unsubscribeVotes = onValue(votesRef, (snapshot) => {
+      if (snapshot.exists()) {
+        setVotes(snapshot.val());
+      } else {
+        setVotes({});
+      }
+    });
+
+    // Listen for voter names in real-time
+    const voterNamesRef = ref(database, "voterNames");
+    const unsubscribeNames = onValue(voterNamesRef, (snapshot) => {
+      if (snapshot.exists()) {
+        setVoterNames(snapshot.val());
+      } else {
+        setVoterNames({});
+      }
+    });
+
+    // Load suggestions
+    const suggestionsRef = ref(database, "suggestions");
+    const unsubscribeSuggestions = onValue(suggestionsRef, (snapshot) => {
+      if (snapshot.exists()) {
+        setSuggestions(snapshot.val());
+      } else {
+        setSuggestions([]);
+      }
+    });
+
+    setLoading(false);
+
+    return () => {
+      unsubscribeVotes();
+      unsubscribeNames();
+      unsubscribeSuggestions();
+    };
+  }, []);
 
   const handleVote = async (id) => {
     if (!nameSet) return;
@@ -317,8 +333,6 @@ export default function App() {
     setMyVotes(newMyVotes);
 
     const newVotes = { ...votes, [id]: Math.max(0, (votes[id] || 0) + (willVote ? 1 : -1)) };
-    setVotes(newVotes);
-
     const newNames = { ...voterNames };
     if (!newNames[id]) newNames[id] = [];
     if (willVote) {
@@ -326,11 +340,16 @@ export default function App() {
     } else {
       newNames[id] = newNames[id].filter(n => n !== name);
     }
-    setVoterNames(newNames);
 
     try {
-      localStorage.setItem(STORE_VOTES, JSON.stringify({ votes: newVotes, names: newNames }));
-    } catch (e) { /* empty */ }
+      // Update votes and names in Firebase
+      await Promise.all([
+        set(ref(database, `votes/${id}`), newVotes[id]),
+        set(ref(database, `voterNames/${id}`), newNames[id])
+      ]);
+    } catch (e) {
+      console.error("Error saving vote:", e);
+    }
   };
 
   const handleSuggestion = async () => {
@@ -339,8 +358,10 @@ export default function App() {
     setSuggestions(updated);
     setNewSuggestion("");
     try {
-      localStorage.setItem(STORE_SUGGEST, JSON.stringify(updated));
-    } catch (e) { /* empty */ }
+      await set(ref(database, "suggestions"), updated);
+    } catch (e) {
+      console.error("Error saving suggestion:", e);
+    }
   };
 
   if (loading) {
